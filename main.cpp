@@ -61,7 +61,8 @@ ifreq *get_host_mac(char *nic_name){
 void arp_send(eth_Header *eth, arp_Header *arp, pcap_t *hdle, u_char *pack);
 void eth_Make(eth_Header *eth, u_char *dmac, ifreq *smac);
 void arp_Make(arp_Header *arp, u_char *dmac, ifreq *smac, u_char *dip, u_char *sip, uint t);
-
+void ip_chksum(u_char *packet, int siz);
+void tcp_chksum(u_char *packet, u_int8_t th, u_int64_t tp);
 
 int main(int argc, char **argv)
 {
@@ -186,12 +187,12 @@ int main(int argc, char **argv)
     {
         if(p%10 == 0)
         {
-        //arp reply !!
-        memset(packet, 0 ,sizeof(packet));
-        memcpy(packet, &ethhd, sizeof(ethhd));
-        memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));
-        for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
-        printf("\n");
+//        //arp reply !!
+//        memset(packet, 0 ,sizeof(packet));
+//        memcpy(packet, &ethhd, sizeof(ethhd));
+//        memcpy(packet + sizeof(ethhd), &arphd, sizeof(arphd));
+//        for(int i=0; i<sizeof(ethhd); i++) printf(" %x", packet[i]);
+//        printf("\n");
 
         if(pcap_sendpacket(handle, packet, sizeof(packet)) != 0)
         {
@@ -209,7 +210,7 @@ int main(int argc, char **argv)
         pcap_next_ex(handle, &headers, &pacspo);
         printf("%u bytes captured\n", headers->caplen);
         u_char rely[6];
-        u_char pac[1500];
+        u_char pac[1500] = {0,};
         memcpy(rely, &pacspo[6], 6);
         int j=0;
         for(int i=0; i<6; i++)
@@ -219,29 +220,85 @@ int main(int argc, char **argv)
         if(j==6)
         {
             printf("ARP relay\n");
-//            size_t k = sizeof(pacspo);
-//            printf("      %u\n", headers->caplen);
             memset(pac, 0, headers->caplen);
             memcpy(pac, pacspo, headers->caplen);
-//            for(int i=0; i<4; i++)
-//            {
-//                printf("  %02x\n", pac[i]);
-//                printf("  %x\n", pac[i+26]);
-//            }
+
             memcpy(pac, gmac, 6);   //my mac -> gateway mac
             memcpy(&pac[6], ifr->ifr_hwaddr.sa_data, 6);    //eth source mac -> my mac address
-            for(int i=0; i<4; i++)
-            {
-//                printf("%02x\n", pac[i]);
+            for(int i=0; i<4; i++) pac[i+26] = ipm[i]; //tcp packet source ip -> my ip
 
-                pac[i+26] = ipm[i]; //tcp packet source ip -> my ip
-//                printf("%x\n", pac[i+26]);
-            }
-            if(pcap_sendpacket(handle, pac, headers->caplen) != 0)
+
+            if(pac[12] == 0x08 && pac[13] == 0x00)
             {
-                printf("send error22!!\n");
-                return 0;
+                printf("IPv4!!");
+                u_int8_t ihl = (pac[14] & 0x0F) * 4; //IP Header Length (4bit), packet[14] = Version(4bit) and IHL(4bit) , 20
+                u_int8_t thl = pac[26 + ihl] / 4; //TCP Header Length, 14 + ihl + 13 - 1 ,
+                u_int8_t tp = 14 + ihl + thl; //TCP Payload Start Point , 34
+                u_int64_t tpl = headers->caplen - tp; //Payload Length
+//                ip_chksum(&pac[14], ihl);
+                //IP header checksum
+                long sum=0;
+                long ans=0;
+                for(int s=14; s<34; s+=2)
+                {
+                    if(s==24) continue;
+                    sum += pac[s] << 8;
+                    sum += pac[s+1];
+                }
+
+                printf("sum!!! = %ld\n", sum);
+                ans = (sum>>16) + (sum & 0xffff);
+                ans = ans ^ 0xffff;
+                printf("%x\n", ans);
+                printf("%x %x\n", ans >> 8, ans & 0xff);
+                pac[24] = ans >> 8;
+                pac[25] = ans & 0xff;
+
+                //TCP header checksum
+//                tcp_chksum(&pac[26], thl, tpl);
+                long p_sum=0;
+
+                printf("%d %d %d %d\n", ihl, thl, tp, tpl);
+                //Pseudo Header sum
+                for(int s=26; s<34; s+=2)
+                {
+                    p_sum += pac[s] << 8;
+                    p_sum += pac[s+1];
+                    if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+                }
+                p_sum += 0x0006;
+                if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+                p_sum += thl;
+                p_sum += tpl;
+                if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+                //TCP Segment sum
+                long t_sum = 0;
+                for(int s=14+ihl; s < headers->caplen; s+=2)
+                {
+                    if(s==14+ihl+16) continue;
+                    t_sum += pac[s] << 8;
+                    t_sum += pac[s+1];
+                    if(t_sum > 65536) t_sum = (t_sum - 65536) + 1;
+                }
+                p_sum += t_sum;
+                if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+                p_sum = p_sum ^ 0xffff;
+
+                pac[14+ihl+16] = p_sum >> 8;
+                pac[14+ihl+16+1] = p_sum & 0xff;
+
+                printf("p_sum= %x\n", p_sum);
+                printf("p_sum %x %x\n", p_sum >> 8, p_sum & 0xff);
+
+                if(pcap_sendpacket(handle, pac, headers->caplen) != 0)
+                {
+                    printf("send error22!!\n");
+                    return 0;
+                }
             }
+
+
+
 
         }
     }
@@ -294,4 +351,58 @@ void arp_Make(arp_Header *arp, u_char *dmac, ifreq *smac, u_char *dip, u_char *s
     memcpy(arp->arp_sip, sip, 4);
     memcpy(arp->arp_dmac, dmac, 6);
     memcpy(arp->arp_dip, dip, 4);
+}
+void ip_chksum(u_char *packet, int siz)
+{
+    long sum=0;
+    long ans=0;
+    for(int s=0; s<siz; s+=2)
+    {
+        if(s==10) continue;
+        sum += packet[s] << 8;
+        sum += packet[s+1];
+    }
+
+    printf("sum!!! = %ld\n", sum);
+    ans = (sum>>16) + (sum & 0xffff);
+    ans = ans ^ 0xffff;
+    printf("%x\n", ans);
+    printf("%x %x\n", ans >> 8, ans & 0xff);
+    packet[10] = ans >> 8;
+    packet[11] = ans & 0xff;
+}
+void tcp_chksum(u_char *packet, u_int8_t th, u_int64_t tp)
+{
+    long p_sum=0;
+
+    //Pseudo Header sum
+    for(int s=0; s<8; s+=2)
+    {
+        p_sum += packet[s] << 8;
+        p_sum += packet[s+1];
+        if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+    }
+    p_sum += 0x0006;
+    if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+    p_sum += th;
+    p_sum += tp;
+    if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+    //TCP Segment sum
+    long t_sum = 0;
+    for(int s=8; s < th+tp; s+=2)
+    {
+        if(s==8+16) continue;
+        t_sum += packet[s] << 8;
+        t_sum += packet[s+1];
+        if(t_sum > 65536) t_sum = (t_sum - 65536) + 1;
+    }
+    p_sum += t_sum;
+    if(p_sum > 65536) p_sum = (p_sum - 65536) + 1;
+    p_sum = p_sum ^ 0xffff;
+
+    packet[8+16] = p_sum >> 8;
+    packet[8+16+1] = p_sum & 0xff;
+
+    printf("p_sum= %x\n", p_sum);
+    printf("p_sum %x %x\n", p_sum >> 8, p_sum & 0xff);
 }
