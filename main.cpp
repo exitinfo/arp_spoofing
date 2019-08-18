@@ -277,7 +277,7 @@ int main(int argc, char **argv)
                         printf("RELAY!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
                         for(int i=0; i<4; i++) pacrea[i+30] = ips[i];
                         memcpy(&pacrea[0], smac, 6);
-             //         memcpy(&pacrea[6], gmac, 6);
+                        memcpy(&pacrea[6], gmac, 6);
                         ip_chksum(&pacrea[14], ihle);
                         tcp_chksum(&pacrea[0], ihle, thle, tple);
                         if(pcap_sendpacket(handle, pacrea, size) != 0)
