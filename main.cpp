@@ -12,10 +12,6 @@
 
 using namespace std;
 
-#define arpheader   0x0001
-#define arp_req     0x0001
-#define arp_ply     0x0002
-
 typedef struct eth_header
 {
     u_char eth_dmac[6];
@@ -65,8 +61,7 @@ void eth_Make(eth_Header *eth, u_char *dmac, ifreq *smac);
 void arp_Make(arp_Header *arp, u_char *dmac, ifreq *smac, u_char *dip, u_char *sip, uint t);
 void ip_chksum(u_char *packet, int siz);
 void tcp_chksum(u_char *packet, u_int8_t ih, u_int8_t th, u_int8_t tp);
-u_char tcpac[4] = {0,};
-u_char gmac[6] = {0x2c, 0x59, 0x8a, 0x59, 0x4a, 0x68};  //gateway mac, later source change!!
+
 int main(int argc, char **argv)
 {
     arp_Header arphd;
@@ -100,6 +95,7 @@ int main(int argc, char **argv)
     u_char ipm[4] = {0xc0, 0xa8, 0x2b, 0xe1};   //my ip
     u_char bmac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};  //broadcast mac addr eth
     u_char lmac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  //broadcast mac addr arp
+    u_char gmac[6] = {0x2c, 0x59, 0x8a, 0x59, 0x4a, 0x68};  //gateway mac, later source change!!
 
     //ARP Request
     eth_Make(&ethhd, &bmac[0], &ifr[0]);    //arp request eth header
